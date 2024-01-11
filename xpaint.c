@@ -81,7 +81,7 @@ struct Ctx {
         u32 width;
         u32 height;
         struct Canvas {
-            Pixmap pm;
+            XImage* im;
             u32 width;
             u32 height;
         } cv;
@@ -186,6 +186,9 @@ static Bool history_push(struct History**, struct Ctx*);
 
 static void historyarr_clear(Display*, struct History**);
 static void canvas_clear(Display*, struct Canvas*);
+
+static void canvas_fill(struct DrawCtx*, u32);
+static void canvas_line(struct DrawCtx*, Pair, Pair, u32, u32);
 
 static void
 draw_selection_circle(struct DrawCtx*, struct SelectionCircle const*, i32, i32);
@@ -441,18 +444,7 @@ void tool_pencil_on_release(
 
     if (!tc->is_dragging) {
         Pair pointer = point_from_scr_to_cv(event->x, event->y, dc);
-        XSetForeground(dc->dp, dc->gc, CURR_COL(tc));
-        XFillArc(
-            dc->dp,
-            dc->cv.pm,
-            dc->gc,
-            pointer.x - tc->data.pencil.line_r / 2,
-            pointer.y - tc->data.pencil.line_r / 2,
-            tc->data.pencil.line_r,
-            tc->data.pencil.line_r,
-            0,
-            360 * 64
-        );
+        // QWFP
     }
 }
 
@@ -466,24 +458,7 @@ void tool_pencil_on_drag(
 
     Pair pointer = point_from_scr_to_cv(event->x, event->y, dc);
     Pair prev_pointer = point_from_scr_to_cv(tc->prev_x, tc->prev_y, dc);
-    XSetForeground(dc->dp, dc->gc, CURR_COL(tc));
-    XSetLineAttributes(
-        dc->dp,
-        dc->gc,
-        tc->data.pencil.line_r,
-        LineSolid,
-        CapRound,  // fills gaps in lines
-        JoinMiter  // FIXME what is it
-    );
-    XDrawLine(
-        dc->dp,
-        dc->cv.pm,
-        dc->gc,
-        prev_pointer.x,
-        prev_pointer.y,
-        pointer.x,
-        pointer.y
-    );
+    canvas_line(dc, prev_pointer, pointer, CURR_COL(tc), 1);
 }
 
 static void flood_fill(XImage* im, u64 targ_col, i32 x, i32 y) {
@@ -525,39 +500,9 @@ void tool_fill_on_release(
     struct ToolCtx* tc,
     XButtonReleasedEvent const* event
 ) {
-    XImage* cv_im = XGetImage(
-        dc->dp,
-        dc->cv.pm,
-        0,
-        0,
-        dc->cv.width,
-        dc->cv.height,
-        AllPlanes,
-        ZPixmap
-    );
-    if (cv_im == NULL) {
-        trace("tool_fill_on_release: XGetImage on canvas failed");
-        return;
-    }
-
     Pair const pointer = point_from_scr_to_cv(event->x, event->y, dc);
 
-    flood_fill(cv_im, CURR_COL(tc), pointer.x, pointer.y);
-
-    XPutImage(
-        dc->dp,
-        dc->cv.pm,
-        dc->gc,
-        cv_im,
-        0,
-        0,
-        0,
-        0,
-        dc->cv.width,
-        dc->cv.height
-    );
-
-    XDestroyImage(cv_im);
+    flood_fill(dc->cv.im, CURR_COL(tc), pointer.x, pointer.y);
 }
 
 Bool history_move(struct Ctx* ctx, Bool forward) {
@@ -586,37 +531,8 @@ Bool history_push(struct History** hist, struct Ctx* ctx) {
         .cv = ctx->dc.cv,
     };
 
-    new_item.cv.pm = XCreatePixmap(
-        ctx->dc.dp,
-        ctx->dc.window,
-        ctx->dc.width,
-        ctx->dc.height,
-        ctx->dc.vinfo.depth
-    );
-    /* highlight invalid area */ {
-        XSetForeground(ctx->dc.dp, ctx->dc.screen_gc, 0xFF00FF);
-        XFillRectangle(
-            ctx->dc.dp,
-            new_item.cv.pm,
-            ctx->dc.screen_gc,
-            0,
-            0,
-            new_item.cv.width,
-            new_item.cv.height
-        );
-    }
-    XCopyArea(
-        ctx->dc.dp,
-        ctx->dc.cv.pm,
-        new_item.cv.pm,
-        ctx->dc.gc,
-        0,
-        0,
-        ctx->dc.width,
-        ctx->dc.height,
-        0,
-        0
-    );
+    new_item.cv.im =
+        XSubImage(ctx->dc.cv.im, 0, 0, ctx->dc.cv.width, ctx->dc.cv.height);
 
     arrpush(*hist, new_item);
 
@@ -632,7 +548,7 @@ void historyarr_clear(Display* dp, struct History** hist) {
 }
 
 void canvas_clear(Display* dp, struct Canvas* cv) {
-    XFreePixmap(dp, cv->pm);
+    XDestroyImage(cv->im);
 }
 
 void init_sel_circ_tools(struct SelectionCircle* sc, i32 x, i32 y) {
@@ -670,6 +586,52 @@ i32 current_sel_circ_item(struct SelectionCircle const* sc, i32 x, i32 y) {
         return angle / segment_deg;
     } else {
         return NIL;
+    }
+}
+
+void canvas_fill(struct DrawCtx* dc, u32 color) {
+    assert(dc->cv.im);
+
+    for (i32 i = 0; i < dc->cv.im->width; ++i) {
+        for (i32 j = 0; j < dc->cv.im->height; ++j) {
+            XPutPixel(dc->cv.im, i, j, color);
+        }
+    }
+}
+
+void canvas_line(
+    struct DrawCtx* dc,
+    Pair from,
+    Pair to,
+    u32 color,
+    u32 line_w
+) {
+    assert(dc->cv.im);
+    assert(line_w == 1);
+
+    i32 dx = abs(to.x - from.x);
+    i32 sx = from.x < to.x ? 1 : -1;
+    i32 dy = -abs(to.y - from.y);
+    i32 sy = from.y < to.y ? 1 : -1;
+    i32 error = dx + dy;
+
+    while (True) {
+        XPutPixel(dc->cv.im, from.x, from.y, color);
+        if (from.x == to.x && from.y == to.y)
+            break;
+        i32 e2 = 2 * error;
+        if (e2 >= dy) {
+            if (from.x == to.x)
+                break;
+            error += dy;
+            from.x += sx;
+        }
+        if (e2 <= dx) {
+            if (from.y == to.y)
+                break;
+            error += dx;
+            from.y += sy;
+        }
     }
 }
 
@@ -841,18 +803,17 @@ void update_screen(struct Ctx* ctx) {
         ctx->dc.width,
         ctx->dc.height
     );
-    // xsetwindowbackgroundpixmap will fill all screen space
-    XCopyArea(
+    XPutImage(
         ctx->dc.dp,
-        ctx->dc.cv.pm,
-        ctx->dc.screen,
+        ctx->dc.window,
         ctx->dc.gc,
+        ctx->dc.cv.im,
         0,
         0,
-        ctx->dc.cv.width,
-        ctx->dc.cv.height,
         cv_pivot.x,
-        cv_pivot.y
+        cv_pivot.y,
+        ctx->dc.cv.width,
+        ctx->dc.cv.height
     );
     /* current selection */ {
         if (HAS_SELECTION(ctx)) {
@@ -1016,6 +977,8 @@ void update_screen(struct Ctx* ctx) {
     }
 }
 
+// QWFP
+/*
 void resize_canvas(struct DrawCtx* dc, i32 new_width, i32 new_height) {
     Pixmap new_pm = XCreatePixmap(
         dc->dp,
@@ -1030,7 +993,7 @@ void resize_canvas(struct DrawCtx* dc, i32 new_width, i32 new_height) {
 
     XCopyArea(
         dc->dp,
-        dc->cv.pm,
+        dc->cv.im,
         new_pm,
         dc->gc,
         0,
@@ -1040,12 +1003,13 @@ void resize_canvas(struct DrawCtx* dc, i32 new_width, i32 new_height) {
         0,
         0
     );
-    XFreePixmap(dc->dp, dc->cv.pm);
+    XFreePixmap(dc->dp, dc->cv.im);
 
-    dc->cv.pm = new_pm;
+    dc->cv.im = new_pm;
     dc->cv.width = new_width;
     dc->cv.height = new_height;
 }
+*/
 
 void free_sel_circ(struct SelectionCircle* sel_circ) {
     sel_circ->is_active = False;
@@ -1177,13 +1141,24 @@ struct Ctx setup(Display* dp) {
     /* canvas */ {
         ctx.dc.cv.width = CANVAS.default_width;
         ctx.dc.cv.height = CANVAS.default_height;
-        ctx.dc.cv.pm = XCreatePixmap(
+        Pixmap data = XCreatePixmap(
             dp,
             ctx.dc.window,
             ctx.dc.cv.width,
             ctx.dc.cv.height,
             ctx.dc.vinfo.depth
         );
+        ctx.dc.cv.im = XGetImage(
+            ctx.dc.dp,
+            data,
+            0,
+            0,
+            ctx.dc.cv.width,
+            ctx.dc.cv.height,
+            AllPlanes,
+            XYPixmap
+        );
+        XFreePixmap(ctx.dc.dp, data);
         XGCValues canvas_gc_vals = {
             .line_style = LineSolid,
             .line_width = 5,
@@ -1198,16 +1173,7 @@ struct Ctx setup(Display* dp) {
             &canvas_gc_vals
         );
         // initial canvas color
-        XSetForeground(dp, ctx.dc.gc, CANVAS.background_rgb);
-        XFillRectangle(
-            dp,
-            ctx.dc.cv.pm,
-            ctx.dc.gc,
-            0,
-            0,
-            ctx.dc.cv.width,
-            ctx.dc.cv.height
-        );
+        canvas_fill(&ctx.dc, CANVAS.background_rgb);
     }
 
     for (i32 i = 0; i < TCS_NUM; ++i) {
@@ -1334,16 +1300,8 @@ Bool key_press_hdlr(struct Ctx* ctx, XEvent* event) {
                     if (ctx->sel_buf.im != NULL) {
                         XDestroyImage(ctx->sel_buf.im);
                     }
-                    ctx->sel_buf.im = XGetImage(
-                        ctx->dc.dp,
-                        ctx->dc.cv.pm,
-                        x,
-                        y,
-                        width,
-                        height,
-                        AllPlanes,
-                        ZPixmap
-                    );
+                    ctx->sel_buf.im =
+                        XSubImage(ctx->dc.cv.im, x, y, width, height);
                     assert(ctx->sel_buf.im != NULL);
                     assert(
                         ctx->sel_buf.im->width == width
@@ -1642,7 +1600,7 @@ void cleanup(struct Ctx* ctx) {
     XFreeFont(ctx->dc.dp, ctx->dc.font);
     XFreeGC(ctx->dc.dp, ctx->dc.gc);
     XFreeGC(ctx->dc.dp, ctx->dc.screen_gc);
-    XFreePixmap(ctx->dc.dp, ctx->dc.cv.pm);
+    XDestroyImage(ctx->dc.cv.im);
     if (ctx->sel_buf.im != NULL) {
         XDestroyImage(ctx->sel_buf.im);
     }
