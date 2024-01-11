@@ -189,6 +189,7 @@ static void canvas_clear(Display*, struct Canvas*);
 
 static void canvas_fill(struct DrawCtx*, u32);
 static void canvas_line(struct DrawCtx*, Pair, Pair, u32, u32);
+static void canvas_point(struct DrawCtx*, Pair, u32, u32);
 
 static void
 draw_selection_circle(struct DrawCtx*, struct SelectionCircle const*, i32, i32);
@@ -444,7 +445,8 @@ void tool_pencil_on_release(
 
     if (!tc->is_dragging) {
         Pair pointer = point_from_scr_to_cv(event->x, event->y, dc);
-        // QWFP
+        // FIXME line width
+        canvas_point(dc, pointer, CURR_COL(tc), 1);
     }
 }
 
@@ -607,7 +609,7 @@ void canvas_line(
     u32 line_w
 ) {
     assert(dc->cv.im);
-    assert(line_w == 1);
+    assert(line_w == 1 && "not implemented");
 
     i32 dx = abs(to.x - from.x);
     i32 sx = from.x < to.x ? 1 : -1;
@@ -615,7 +617,8 @@ void canvas_line(
     i32 sy = from.y < to.y ? 1 : -1;
     i32 error = dx + dy;
 
-    while (True) {
+    while (from.x >= 0 && from.y >= 0 && from.x < dc->cv.im->width
+           && from.y < dc->cv.im->height) {
         XPutPixel(dc->cv.im, from.x, from.y, color);
         if (from.x == to.x && from.y == to.y)
             break;
@@ -633,6 +636,12 @@ void canvas_line(
             from.y += sy;
         }
     }
+}
+
+void canvas_point(struct DrawCtx* dc, Pair c, u32 col, u32 line_w) {
+    assert(line_w == 1 && "not implemented");
+
+    XPutPixel(dc->cv.im, c.x, c.y, col);
 }
 
 void draw_selection_circle(
@@ -1156,7 +1165,7 @@ struct Ctx setup(Display* dp) {
             ctx.dc.cv.width,
             ctx.dc.cv.height,
             AllPlanes,
-            XYPixmap
+            ZPixmap
         );
         XFreePixmap(ctx.dc.dp, data);
         XGCValues canvas_gc_vals = {
