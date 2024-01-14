@@ -198,7 +198,7 @@ draw_selection_circle(struct DrawCtx*, struct SelectionCircle const*, i32, i32);
 static void clear_selection_circle(struct DrawCtx*, struct SelectionCircle*);
 static void update_screen(struct Ctx*);
 
-// static void resize_canvas(struct DrawCtx*, i32, i32);
+static void resize_canvas(struct DrawCtx*, i32, i32);
 
 static struct Ctx setup(Display*);
 static void run(struct Ctx*);
@@ -1005,39 +1005,20 @@ void update_screen(struct Ctx* ctx) {
     );
 }
 
-// QWFP
-/*
 void resize_canvas(struct DrawCtx* dc, i32 new_width, i32 new_height) {
-    Pixmap new_pm = XCreatePixmap(
-        dc->dp,
-        dc->window,
-        new_width,
-        new_height,
-        dc->vinfo.depth
-    );
+    if (new_width <= 0 || new_height <= 0) {
+        trace("resize_canvas: invalid canvas size");
+        return;
+    }
 
-    XSetForeground(dc->dp, dc->gc, CANVAS.background_rgb);
-    XFillRectangle(dc->dp, new_pm, dc->gc, 0, 0, new_width, new_height);
+    XImage* new_cv_im = XSubImage(dc->cv.im, 0, 0, new_width, new_height);
 
-    XCopyArea(
-        dc->dp,
-        dc->cv.im,
-        new_pm,
-        dc->gc,
-        0,
-        0,
-        dc->cv.width,
-        dc->cv.height,
-        0,
-        0
-    );
-    XFreePixmap(dc->dp, dc->cv.im);
+    XDestroyImage(dc->cv.im);
 
-    dc->cv.im = new_pm;
+    dc->cv.im = new_cv_im;
     dc->cv.width = new_width;
     dc->cv.height = new_height;
 }
-*/
 
 void free_sel_circ(struct SelectionCircle* sel_circ) {
     sel_circ->is_active = False;
@@ -1379,6 +1360,22 @@ Bool key_press_hdlr(struct Ctx* ctx, XEvent* event) {
                     ctx->curr_tc = val;
                     update_screen(ctx);
                 }
+            }
+            if (key_sym >= XK_Left && key_sym <= XK_Down
+                && e.state & ControlMask) {
+                u32 const value = e.state & ShiftMask ? 25 : 5;
+                resize_canvas(
+                    &ctx->dc,
+                    ctx->dc.cv.width
+                        + (key_sym == XK_Left        ? -value
+                               : key_sym == XK_Right ? value
+                                                     : 0),
+                    ctx->dc.cv.height
+                        + (key_sym == XK_Down     ? -value
+                               : key_sym == XK_Up ? value
+                                                  : 0)
+                );
+                update_screen(ctx);
             }
         } break;
 
