@@ -233,6 +233,14 @@ i32 main(i32 argc, char** argv) {
         die("xpaint: cannot open X display");
     }
 
+    /* extentions support */ {
+        i32 maj = NIL;
+        i32 min = NIL;
+        if (!XdbeQueryExtension(display, &maj, &min)) {
+            die("no X Double Buffer Extention support");
+        }
+    }
+
     struct Ctx ctx = setup(display);
     run(&ctx);
     cleanup(&ctx);
