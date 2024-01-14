@@ -4,6 +4,7 @@
 #include <X11/Xatom.h>  // XA_*
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/Xdbe.h>  // back buffer
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
@@ -80,6 +81,7 @@ struct Ctx {
         Window window;
         u32 width;
         u32 height;
+        XdbeBackBuffer back_buffer;  // double buffering
         struct Canvas {
             XImage* im;
             u32 width;
@@ -805,7 +807,7 @@ void update_screen(struct Ctx* ctx) {
     XSetForeground(ctx->dc.dp, ctx->dc.screen_gc, WINDOW.background_rgb);
     XFillRectangle(
         ctx->dc.dp,
-        ctx->dc.window,
+        ctx->dc.back_buffer,
         ctx->dc.screen_gc,
         0,
         0,
@@ -814,8 +816,8 @@ void update_screen(struct Ctx* ctx) {
     );
     XPutImage(
         ctx->dc.dp,
-        ctx->dc.window,
-        ctx->dc.gc,
+        ctx->dc.back_buffer,
+        ctx->dc.screen_gc,  // FIXME or dc.gc?
         ctx->dc.cv.im,
         0,
         0,
@@ -841,7 +843,7 @@ void update_screen(struct Ctx* ctx) {
             u32 h = MAX(sd.by, sd.ey) - y;
             XDrawRectangle(
                 ctx->dc.dp,
-                ctx->dc.screen,
+                ctx->dc.back_buffer,
                 ctx->dc.screen_gc,
                 cv_pivot.x + x,
                 cv_pivot.y + y,
@@ -856,7 +858,7 @@ void update_screen(struct Ctx* ctx) {
         XSetForeground(dc->dp, dc->screen_gc, STATUSLINE.background_rgb);
         XFillRectangle(
             dc->dp,
-            dc->screen,
+            dc->back_buffer,
             dc->screen_gc,
             0,
             dc->height - STATUSLINE.height_px,
@@ -886,7 +888,7 @@ void update_screen(struct Ctx* ctx) {
                 }
                 XDrawImageString(
                     dc->dp,
-                    dc->screen,
+                    dc->back_buffer,
                     dc->screen_gc,
                     tc_w * i,
                     dc->height,
@@ -902,7 +904,7 @@ void update_screen(struct Ctx* ctx) {
                                                         : "unknown";
                 XDrawImageString(
                     dc->dp,
-                    dc->screen,
+                    dc->back_buffer,
                     dc->screen_gc,
                     tc_w * TCS_NUM,
                     dc->height,
@@ -913,7 +915,7 @@ void update_screen(struct Ctx* ctx) {
             if (tc->ssz_tool_name) {
                 XDrawImageString(
                     dc->dp,
-                    dc->screen,
+                    dc->back_buffer,
                     dc->screen_gc,
                     input_state_w + tc_w * TCS_NUM,
                     dc->height,
@@ -926,7 +928,7 @@ void update_screen(struct Ctx* ctx) {
                 sprintf(col_value, "#%06X", CURR_COL(tc));
                 XDrawImageString(
                     dc->dp,
-                    dc->screen,
+                    dc->back_buffer,
                     dc->screen_gc,
                     dc->width - col_name_len - col_count_w,
                     dc->height,
@@ -943,7 +945,7 @@ void update_screen(struct Ctx* ctx) {
                     );
                     XDrawImageString(
                         dc->dp,
-                        dc->screen,
+                        dc->back_buffer,
                         dc->screen_gc,
                         dc->width - col_count_w,
                         dc->height,
@@ -963,7 +965,7 @@ void update_screen(struct Ctx* ctx) {
                     );
                     XDrawImageString(
                         dc->dp,
-                        dc->screen,
+                        dc->back_buffer,
                         dc->screen_gc,
                         dc->width - col_name_len + pad - col_count_w,
                         dc->height,
@@ -974,7 +976,7 @@ void update_screen(struct Ctx* ctx) {
                 XSetForeground(dc->dp, dc->screen_gc, CURR_COL(tc));
                 XFillRectangle(
                     dc->dp,
-                    dc->screen,
+                    dc->back_buffer,
                     dc->screen_gc,
                     dc->width - col_name_len - col_rect_w - col_count_w,
                     dc->height - STATUSLINE.height_px,
@@ -984,6 +986,15 @@ void update_screen(struct Ctx* ctx) {
             }
         }
     }
+
+    XdbeSwapBuffers(
+        ctx->dc.dp,
+        &(XdbeSwapInfo) {
+            .swap_window = ctx->dc.screen,  // FIXME screen or window?
+            .swap_action = 0,
+        },
+        1
+    );
 }
 
 // QWFP
@@ -1118,6 +1129,8 @@ struct Ctx setup(Display* dp) {
            .format = 8,
            .encoding = atoms[A_Utf8string]}
     );
+
+    ctx.dc.back_buffer = XdbeAllocateBackBufferName(dp, ctx.dc.window, 0);
 
     /* turn on protocol support */ {
         Atom wm_delete_window = XInternAtom(dp, "WM_DELETE_WINDOW", False);
@@ -1439,6 +1452,8 @@ Bool configure_notify_hdlr(struct Ctx* ctx, XEvent* event) {
     ctx->dc.width = event->xconfigure.width;
     ctx->dc.height = event->xconfigure.height;
 
+    // backbuffer resizes automatically
+
     return True;
 }
 
@@ -1610,6 +1625,7 @@ void cleanup(struct Ctx* ctx) {
     XFreeGC(ctx->dc.dp, ctx->dc.gc);
     XFreeGC(ctx->dc.dp, ctx->dc.screen_gc);
     XDestroyImage(ctx->dc.cv.im);
+    XdbeDeallocateBackBufferName(ctx->dc.dp, ctx->dc.back_buffer);
     if (ctx->sel_buf.im != NULL) {
         XDestroyImage(ctx->sel_buf.im);
     }
