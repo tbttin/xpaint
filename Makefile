@@ -59,7 +59,7 @@ dev: clean ## generate dev files
 	bear -- make xpaint-d
 
 tags: $(libs) $(headers) $(src)
-	@$(CTAGS) $^
+	@$(CTAGS) -R /usr/include/X11 $^
 
 .PHONY: all help run clean install uninstall check dev
 
